@@ -176,4 +176,7 @@ Temporary Items
 ### idea ###
 .idea/
 
+### iml ###
+*.iml
+
 # End of https://www.toptal.com/developers/gitignore/api/intellij,macos,java
