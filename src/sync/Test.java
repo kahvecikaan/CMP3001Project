@@ -1,8 +1,6 @@
 package sync;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
-
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
 public class Test {
     public static void main(String[] args) {
@@ -19,22 +17,19 @@ public class Test {
     }
 }
 
-
 class SharedData {
     private int data = 0;
 
-    public int read() {
+    public synchronized int read() {
         return data;
     }
 
-    public void write() {
+    public synchronized void write() {
         data++;
     }
 }
 
-
-class Writer implements Runnable
-{
+class Writer implements Runnable {
     private ReadWriteLock RW_lock;
     private SharedData sharedData;
 
@@ -44,13 +39,12 @@ class Writer implements Runnable
     }
 
     public void run() {
-        while (true){
+        while (true) {
             RW_lock.writeLock();
             sharedData.write();
             System.out.println("Writer wrote: " + sharedData.read());
             RW_lock.writeUnLock();
 
-            // sleep a bit to stimulate writing delay
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
@@ -60,36 +54,33 @@ class Writer implements Runnable
     }
 }
 
-
 class ReadWriteLock {
-    private Semaphore readLock = new Semaphore(1);
-    private Semaphore writeLock = new Semaphore(1);
-    private Semaphore preferWrite = new Semaphore(1); // to give priority to writers
-    private int readCount = 0;
+    private Semaphore readLock = new Semaphore(1, true); // Fair semaphore
+    private Semaphore writeLock = new Semaphore(1, true); // Fair semaphore
+    private Semaphore turnstile = new Semaphore(1, true); // Fair semaphore to prevent reader starvation
+    private AtomicInteger readCount = new AtomicInteger(0);
+    private AtomicInteger writerWaiting = new AtomicInteger(0);
 
-    // Method for readers to acquire the lock
     public void readLock() {
         try {
-            preferWrite.acquire(); // check if there is a writer waiting
+            turnstile.acquire(); // First acquire the turnstile semaphore
+            turnstile.release(); // Then release it immediately
+
             readLock.acquire();
-            readCount++;
-            if (readCount == 1) {
-                writeLock.acquire(); // if this is the first reader, then block writers
+            if (readCount.incrementAndGet() == 1) {
+                writeLock.acquire(); // Block writers if this is the first reader
             }
             readLock.release();
-            preferWrite.release(); // release to allow other readers or waiting writers
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
-    // Method for readers to release the lock
     public void readUnLock() {
         try {
             readLock.acquire();
-            readCount--;
-            if (readCount == 0) {
-                writeLock.release(); // if this is the last reader, then unblock writers
+            if (readCount.decrementAndGet() == 0) {
+                writeLock.release(); // Allow writers if this is the last reader
             }
             readLock.release();
         } catch (InterruptedException e) {
@@ -97,26 +88,30 @@ class ReadWriteLock {
         }
     }
 
-    // Method for writers to acquire the lock
     public void writeLock() {
         try {
-            preferWrite.acquire(); // check if there is a writer waiting
-            writeLock.acquire(); // ensure exclusive access for writing
+            writerWaiting.incrementAndGet();
+            turnstile.acquire(); // Block readers from acquiring the turnstile
+            writeLock.acquire(); // Ensure exclusive access for writing
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            writerWaiting.decrementAndGet();
         }
     }
 
-    // Method for writers to release the lock
     public void writeUnLock() {
-        writeLock.release();
-        preferWrite.release(); // release to allow other readers or waiting writers
+        writeLock.release(); // Release exclusive writing access
+        turnstile.release(); // Allow readers to proceed
+    }
+
+    public boolean canRead() {
+        return readCount.get() > 0;
     }
 }
 
 
-class Reader implements Runnable
-{
+class Reader implements Runnable {
     private ReadWriteLock RW_lock;
     private SharedData sharedData;
 
@@ -126,12 +121,13 @@ class Reader implements Runnable
     }
 
     public void run() {
-        while (true){
+        while (true) {
             RW_lock.readLock();
-            System.out.println("Reader read: " + sharedData.read());
+            if (RW_lock.canRead()) {
+                System.out.println("Reader read: " + sharedData.read());
+            }
             RW_lock.readUnLock();
 
-            // sleep a bit to stimulate reading delay
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
